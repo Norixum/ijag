@@ -5,9 +5,10 @@ import "core:fmt"
 import "core:strings"
 import "core:unicode"
 import "core:strconv"
+import "core:slice"
 
-Token_Id :: distinct string
-Token_Num :: distinct int
+Token_Id :: string
+Token_Num :: int
 Token_Op :: enum {
     EQ,
     PLUS,
@@ -16,6 +17,11 @@ Token_Op :: enum {
     LSQPAR,
     RSQPAR,
     DDOT,
+    PRIME,
+    NEWLINE,
+    MINUS,
+    MULTIPLY,
+    DIVISON,
 }
 
 Sum :: struct {
@@ -31,16 +37,6 @@ Func_call :: struct{
     arg: Token_Id,
 }
 
-Expr :: union {
-    int,
-    Sum,
-    List,
-}
-
-Var :: struct {
-    name: Token_Id,
-    expr: Expr
-}
 
 Token :: struct {
     row: int,
@@ -55,8 +51,18 @@ Token_Type :: union{
 }
 
 AST :: struct {
-    variables: [dynamic]Var,
+    variables: map[string][dynamic]Instruction,
     func_calls: [dynamic]Func_call,
+}
+
+PushNum :: int
+PushOp :: Token_Op
+PushVal :: Token_Id
+
+Instruction :: union {
+    PushNum,
+    PushOp,
+    PushVal,
 }
 
 next_token :: proc(tokens: []Token, index: ^int) -> ^Token
@@ -66,23 +72,6 @@ next_token :: proc(tokens: []Token, index: ^int) -> ^Token
         return &tokens[index^]
     }
     return nil
-}
-
-var_exists :: proc(var: []Var, id: Token_Id) -> bool{
-    for v in var{
-        if strings.compare(cast(string)v.name, cast(string)id) == 0 {
-            return true
-        }
-    } 
-    return false
-}
-var_find :: proc(var: []Var, id: Token_Id) -> int{
-    for v,i  in var{
-        if strings.compare(cast(string)v.name, cast(string)id) == 0 {
-            return i
-        }
-    } 
-    return -1
 }
 
 expect_num :: proc(tokens: []Token, index: ^int) -> (result: Token_Num, ok: bool) {
@@ -119,9 +108,9 @@ expect_id :: proc(tokens: []Token, index: ^int) -> (result: ^Token, ok: bool){
     return result, true
 }
 
-expect_existing_id :: proc(tokens: []Token, index: ^int, variables:[]Var) -> (result:Token_Id, ok:bool) {
+expect_existing_id :: proc(tokens: []Token, index: ^int, variables:map[string][dynamic]Instruction) -> (result:Token_Id, ok:bool) {
     id := expect_id(tokens, index) or_return
-    if !var_exists(variables[:], id.type.(Token_Id)){
+    if id.type.(Token_Id) not_in variables {
         fmt.printf("(%v:%v): Variable is not defined: %v", id.row, id.column, id.type.(Token_Id))
         return
     }
@@ -151,6 +140,78 @@ expect_exact_op :: proc(tokens: []Token, index: ^int, expected: Token_Op) -> boo
     return true
 }
 
+parse_expr :: proc(tokens: []Token, i: ^int) -> (expr: [dynamic]Instruction, ok: bool) {
+    for {
+        t := &tokens[i^]
+        if t.type == .NEWLINE {
+            i^ += 1
+            break;
+        }
+        switch ttype in t.type {
+        case Token_Id:
+            unimplemented()
+        case Token_Num:
+            expect_op(tokens, i) or_return
+            i^ -= 1
+            append(&expr, ttype)
+        case Token_Op:
+            switch ttype {
+            case .PLUS: fallthrough
+            case .MINUS: fallthrough
+            case .MULTIPLY: fallthrough
+            case .DIVISON:
+                if len(expr) == 0 {
+                    fmt.printf("(%v:%v): Expected <num> but got <op>", tokens[i^].row, tokens[i^].column)
+                    return
+                }
+                expect_num(tokens, i) or_return
+                i^ -= 1
+                append(&expr, ttype)
+                
+            case .LPAR: 
+                unimplemented()
+            case .RPAR:
+                unimplemented()
+            case .PRIME:
+                unimplemented()
+            case .DDOT:
+                unimplemented()
+            case .EQ:
+                unimplemented()
+            case .LSQPAR:
+                unimplemented()
+            case .RSQPAR:
+                unimplemented()
+            case .NEWLINE:
+                unreachable()
+            }
+        }
+        i^ += 1
+    }
+    return expr, true
+}
+
+op_prio :: proc(op: Token_Op) -> (prio:int) {
+    switch op {
+    case .PLUS: fallthrough
+    case .MINUS: return 1
+    case .MULTIPLY: fallthrough
+    case .DIVISON: return 2
+    
+    case .EQ: fallthrough
+    case .LSQPAR: fallthrough
+    case .RSQPAR: fallthrough
+    case .LPAR: fallthrough
+    case .RPAR: fallthrough
+    case .DDOT: fallthrough
+    case .PRIME: fallthrough
+    case .NEWLINE:
+        fmt.panicf("Error <%v> in expresion", op)
+    case: 
+        unreachable()
+    }
+}
+
 lex :: proc(file: string) -> (tokens: [dynamic]Token, ok: bool) {
     row := 1
     column := 1
@@ -159,6 +220,7 @@ lex :: proc(file: string) -> (tokens: [dynamic]Token, ok: bool) {
             if file[i] == '\n' { 
                 row += 1
                 column = 1
+                append(&tokens, Token{row, column, .NEWLINE})
             }
             else {
                 column += 1
@@ -219,6 +281,26 @@ lex :: proc(file: string) -> (tokens: [dynamic]Token, ok: bool) {
             i += 1
             column += 1
         }
+        else if file[i] == '*' {
+            append(&tokens, Token{row, column, Token_Op.MULTIPLY})
+            i += 1
+            column += 1
+        }
+        else if file[i] == '-' {
+            append(&tokens, Token{row, column, Token_Op.MINUS})
+            i += 1
+            column += 1
+        }
+        else if file[i] == '\'' {
+            append(&tokens, Token{row, column, Token_Op.PRIME})
+            i += 1
+            column += 1
+        }
+        else if file[i] == '/' {
+            append(&tokens, Token{row, column, Token_Op.DIVISON})
+            i += 1
+            column += 1
+        }
         else if i + 1 < len(file) && strings.compare(cast(string)file[i:i+2], "..") == 0 {
             append(&tokens, Token{row, column, Token_Op.DDOT})
             i += 2
@@ -241,62 +323,32 @@ parse :: proc(tokens: []Token) -> (ast: AST, ok: bool) {
             if !ok { return }
             switch op.type.(Token_Op) {
             case .EQ:
-                if var_exists(ast.variables[:], t) {
+                if t in ast.variables {
                     fmt.printf("(%v:%v): Variable redeclaration is prohibited! F@ck U!", curr_token.row, curr_token.column)
                     return
                 }
-                lhs := next_token(tokens, &i)
-                if lhs == nil {
-                    fmt.printf("(%v:%v): Expected token not found", curr_token.row, curr_token.column)
-                    return
-                }
-                switch lhst in lhs.type {
-                case Token_Id:
-                    if !var_exists(ast.variables[:], lhst) {
-                        fmt.printf("(%v:%v): Variable is not declared: %v", lhs.row, lhs.column, lhst)
-                        return
-                    }
-                    if !expect_exact_op(tokens, &i, .PLUS) { return }
-                    rhs := expect_existing_id(tokens, &i, ast.variables[:]) or_return
-                    
-                    append(&ast.variables, Var{t, Sum{lhst, rhs}})
-                case Token_Num:
-                    append(&ast.variables, Var{t, cast(int)lhst})
-                case Token_Op:
-                    if lhst != .LSQPAR {
-                        fmt.printf("(%v:%v): Expected `[` got: %v", lhs.row, lhs.column, lhst)
-                        return
-                    }
-                    start := expect_num(tokens, &i) or_return
-                    expect_exact_op(tokens, &i, .DDOT) or_return
-                    // end := expect_num(tokens, &i) or_return
-                    // hardcoded pseudo infinite list
-                    next := next_token(tokens[:], &i)
-                    if next == nil {
-                        fmt.printf("(%v:%v): Expected <num> but found nothing", curr_token.row, curr_token.column)
-                        return
-                    }
-                    end: int
-                    if _num, ok := next.type.(Token_Num); !ok { 
-                        end = max(int)
-                        i -= 1
-                    }
-                    else {
-                        end = cast(int)_num
-                    }
-                    
-                    expect_exact_op(tokens, &i, .RSQPAR) or_return
-                    append(&ast.variables, Var{t, List{cast(int)start, cast(int)end}})
-                }
+                i += 1
+                expr := parse_expr(tokens, &i) or_return
+                ast.variables[t] = expr
             case .LPAR:
                 if strings.compare(cast(string)t, "print") != 0 {
                     fmt.printf("(%v:%v): Function does not exists: %#v", curr_token.row, curr_token.column, t)
                     return
                 }
-                arg := expect_existing_id(tokens, &i, ast.variables[:]) or_return
+                arg := expect_existing_id(tokens, &i, ast.variables) or_return
 
                 expect_exact_op(tokens, &i, .RPAR) or_return       
                 append(&ast.func_calls, Func_call{"print", arg} )
+            case .MINUS:
+                unreachable()
+            case .DIVISON:
+                unreachable()
+            case .NEWLINE:
+                unreachable()
+            case .MULTIPLY:
+                unreachable()
+            case .PRIME:
+                unreachable()
             case .RPAR:
                 unreachable()
             case .PLUS:
@@ -344,17 +396,27 @@ generate_asm :: proc(ast: AST) {
     fmt.sbprintf(&buffer, "        mov rbp, rsp\n")
     fmt.sbprintf(&buffer, "        push qword 10 ; rbp - 8\n")
     fmt.sbprintf(&buffer, "        push qword 0  ; rbp - 16\n")
+    fmt.sbprintf(&buffer, "        push rax\n")
     fmt.sbprintf(&buffer, "\n")
-    fmt.sbprintf(&buffer, "        sub rsp, 1\n")
     fmt.sbprintf(&buffer, ".lp:\n")
-    fmt.sbprintf(&buffer, "        xor rdx, rdx\n")
-    fmt.sbprintf(&buffer, "        div qword [rbp - 8]\n")
+    fmt.sbprintf(&buffer, "        cqo\n")
+    fmt.sbprintf(&buffer, "        idiv qword [rbp - 8]\n")
+    fmt.sbprintf(&buffer, "        cmp rdx, 0\n")
+    fmt.sbprintf(&buffer, "        jge .skip1\n")
+    fmt.sbprintf(&buffer, "        neg rdx\n")
+    fmt.sbprintf(&buffer, ".skip1:\n")
     fmt.sbprintf(&buffer, "        add rdx, '0'\n")
     fmt.sbprintf(&buffer, "        sub rsp, 1\n")
     fmt.sbprintf(&buffer, "        mov [rsp], dl\n")
     fmt.sbprintf(&buffer, "        inc qword [rbp - 16]\n")
     fmt.sbprintf(&buffer, "        cmp rax, 0\n")
     fmt.sbprintf(&buffer, "        jne .lp\n")
+    fmt.sbprintf(&buffer, "        cmp qword [rbp-24], 0\n")
+    fmt.sbprintf(&buffer, "        jge .skip\n")
+    fmt.sbprintf(&buffer, "        sub rsp, 1\n")
+    fmt.sbprintf(&buffer, "        mov [rsp], byte '-'\n")
+    fmt.sbprintf(&buffer, "        inc qword [rbp - 16]\n")
+    fmt.sbprintf(&buffer, ".skip:\n")
     fmt.sbprintf(&buffer, "        ; Write syscall\n")
     fmt.sbprintf(&buffer, "        mov rax, 1\n")
     fmt.sbprintf(&buffer, "        mov rdi, 1\n")
@@ -366,93 +428,231 @@ generate_asm :: proc(ast: AST) {
     fmt.sbprintf(&buffer, "        pop rbp\n")
     fmt.sbprintf(&buffer, "        ret\n")
     fmt.sbprintf(&buffer, "_start:\n")
-    fmt.sbprintf(&buffer, "        mov rbp, rsp\n")
-    fmt.sbprintf(&buffer, "        sub rsp, %v\n", len(ast.variables)*8)
 
-    for v, i in ast.variables {
-        switch exp in v.expr {
-        case int:
-            fmt.sbprintf(&buffer, "        mov qword [rbp-%v], %v\n",(i+1)*8, exp)
-        
-        case Sum:
-            a := var_find(ast.variables[:], exp.a)
-            b := var_find(ast.variables[:], exp.b)
-            fmt.sbprintf(&buffer, "        mov rax, [rbp-%v]\n", (a+1)*8)
-            fmt.sbprintf(&buffer, "        add rax, [rbp-%v]\n", (b+1)*8)
-            fmt.sbprintf(&buffer, "        mov [rbp-%v], rax\n", (i+1)*8)
-        
-        case List:
-
-        case:
-            unreachable()
-        }
-    }
+    // fmt.sbprintf(&buffer, "        mov qword [rbp-%v], %v\n",(i+1)*8, exp)
+    // a := var_find(ast.variables[:], exp.a)
+    // b := var_find(ast.variables[:], exp.b)
+    // fmt.sbprintf(&buffer, "        mov rax, [rbp-%v]\n", (a+1)*8)
+    // fmt.sbprintf(&buffer, "        add rax, [rbp-%v]\n", (b+1)*8)
+    // fmt.sbprintf(&buffer, "        mov [rbp-%v], rax\n", (i+1)*8)
     
     for f, i in ast.func_calls {
-        arg := var_find(ast.variables[:], f.arg)
-        switch t in ast.variables[arg].expr {
-        case Sum:
-            fmt.sbprintf(&buffer, "        mov rax, [rbp-%v]\n", (arg+1)*8)
-            fmt.sbprintf(&buffer, "        call print\n")
-            fmt.sbprintf(&buffer, "        ; Write syscall\n")
-            fmt.sbprintf(&buffer, "        mov rax, 1\n")
-            fmt.sbprintf(&buffer, "        mov rdi, 1\n")
-            fmt.sbprintf(&buffer, "        mov rsi, newline\n")
-            fmt.sbprintf(&buffer, "        mov rdx, 1\n")
-            fmt.sbprintf(&buffer, "        syscall\n")
-        case int:
-            fmt.sbprintf(&buffer, "        mov rax, [rbp-%v]\n", (arg+1)*8)
-            fmt.sbprintf(&buffer, "        call print\n")
-            fmt.sbprintf(&buffer, "        ; Write syscall\n")
-            fmt.sbprintf(&buffer, "        mov rax, 1\n")
-            fmt.sbprintf(&buffer, "        mov rdi, 1\n")
-            fmt.sbprintf(&buffer, "        mov rsi, newline\n")
-            fmt.sbprintf(&buffer, "        mov rdx, 1\n")
-            fmt.sbprintf(&buffer, "        syscall\n")
-        case List:
-            fmt.sbprintf(&buffer, "        ; Write syscall\n")
-            fmt.sbprintf(&buffer, "        mov rax, 1\n")
-            fmt.sbprintf(&buffer, "        mov rdi, 1\n")
-            fmt.sbprintf(&buffer, "        mov rsi, lsqpar\n")
-            fmt.sbprintf(&buffer, "        mov rdx, 1\n")
-            fmt.sbprintf(&buffer, "        syscall\n")
+        expr, ok := ast.variables[f.arg]
+        if !ok {
+            fmt.printf("Variable is not defined: %v", f.arg)
+        }
+
+        nums_count := 0
+        ops: [dynamic]Token_Op
+        for inst in expr {
+            switch inst in inst{
+            case PushNum:
+                nums_count += 1
+                fmt.sbprintf(&buffer, "        push qword %v\n", inst)
+                
+            case PushOp:
+                prio := op_prio(inst)
+                if len(ops) == 0 || prio > op_prio(slice.last(ops[:])) {
+                    append(&ops, inst)
+                    continue
+                }
+                // dual poping
+                for len(ops) > 0 && prio <= op_prio(slice.last(ops[:])) {
+                    nums_count -= 2
+                    assert(nums_count >= 0)
+                    
+                    fmt.sbprintf(&buffer, "        pop rax\n")
+                    fmt.sbprintf(&buffer, "        pop rbx\n")
+                    op := pop(&ops)
+
+                    switch op {
+                    case .PLUS:
+                        fmt.sbprintf(&buffer, "        add rax, rbx\n")
+                        fmt.sbprintf(&buffer, "        push rax\n")
+                        nums_count += 1
+                    case .MINUS: 
+                        fmt.sbprintf(&buffer, "        sub rbx, rax\n")
+                        fmt.sbprintf(&buffer, "        push rbx\n")
+                        nums_count += 1
+                    case .MULTIPLY: 
+                        fmt.sbprintf(&buffer, "        imul rbx\n")
+                        fmt.sbprintf(&buffer, "        push rax\n")
+                        nums_count += 1
+                    case .DIVISON:
+                        fmt.sbprintf(&buffer, "        idiv rbx\n")
+                        fmt.sbprintf(&buffer, "        push rax\n")
+                        nums_count += 1
+    
+                    case .EQ: fallthrough
+                    case .LSQPAR: fallthrough
+                    case .RSQPAR: fallthrough
+                    case .LPAR: fallthrough
+                    case .RPAR: fallthrough
+                    case .DDOT: fallthrough
+                    case .PRIME: fallthrough
+                    case .NEWLINE:
+                        fmt.panicf("Error <%v> in expresion", op)
+                    case: 
+                        unreachable()
+                    }
+                }
+                append(&ops, inst)
+                
+            case PushVal:
+                unimplemented()
+            }
+        }
+        
+        for len(ops) > 0 {
+            nums_count -= 2
+            assert(nums_count >= 0)
             
-            fmt.sbprintf(&buffer, "        push qword %v\n", t.start)
-            fmt.sbprintf(&buffer, ".printlist%v:\n", i)
-            fmt.sbprintf(&buffer, "        mov rax, [rsp]\n")
-            fmt.sbprintf(&buffer, "        call print\n")
+            fmt.sbprintf(&buffer, "        pop rax\n")
+            fmt.sbprintf(&buffer, "        pop rbx\n")
+            op := pop(&ops)
             
-            fmt.sbprintf(&buffer, "        mov rax, %v\n", t.end)
-            fmt.sbprintf(&buffer, "        cmp [rsp], rax\n")
-            fmt.sbprintf(&buffer, "        je .skipcommaspace%v\n", i)
-            fmt.sbprintf(&buffer, "        ; Write syscall\n")
-            fmt.sbprintf(&buffer, "        mov rax, 1\n")
-            fmt.sbprintf(&buffer, "        mov rdi, 1\n")
-            fmt.sbprintf(&buffer, "        mov rsi, commaspace\n")
-            fmt.sbprintf(&buffer, "        mov rdx, 2\n")
-            fmt.sbprintf(&buffer, "        syscall\n")
+            switch op {
+            case .PLUS:
+                fmt.sbprintf(&buffer, "        add rax, rbx\n")
+                fmt.sbprintf(&buffer, "        push rax\n")
+                nums_count += 1
+            case .MINUS: 
+                fmt.sbprintf(&buffer, "        sub rbx, rax\n")
+                fmt.sbprintf(&buffer, "        push rbx\n")
+                nums_count += 1
+            case .MULTIPLY: 
+                fmt.sbprintf(&buffer, "        imul rbx\n")
+                fmt.sbprintf(&buffer, "        push rax\n")
+                nums_count += 1
+            case .DIVISON:
+                fmt.sbprintf(&buffer, "        idiv rbx\n")
+                fmt.sbprintf(&buffer, "        push rax\n")
+                nums_count += 1
+
+            case .EQ: fallthrough
+            case .LSQPAR: fallthrough
+            case .RSQPAR: fallthrough
+            case .LPAR: fallthrough
+            case .RPAR: fallthrough
+            case .DDOT: fallthrough
+            case .PRIME: fallthrough
+            case .NEWLINE:
+                fmt.panicf("Error <%v> in expresion", op)
+            case: 
+                unreachable()
+            }
+        }
+        
+        fmt.sbprintf(&buffer, "        mov rax, [rsp]\n")
+        fmt.sbprintf(&buffer, "        call print\n")
+        fmt.sbprintf(&buffer, "        add rsp, %v\n", 8 * nums_count)
+        fmt.sbprintf(&buffer, "        ; Write syscall\n")
+        fmt.sbprintf(&buffer, "        mov rax, 1\n")
+        fmt.sbprintf(&buffer, "        mov rdi, 1\n")
+        fmt.sbprintf(&buffer, "        mov rsi, newline\n")
+        fmt.sbprintf(&buffer, "        mov rdx, 1\n")
+        fmt.sbprintf(&buffer, "        syscall\n")
+        
+        // for op, i in ops {
+        //     fmt.sbprintf(&buffer, "        mov rax, [rsp+%v]\n", 8 * (nums_count - i))
+        //     fmt.sbprintf(&buffer, "        mov rbx, [rsp+%v]\n", 8 * (nums_count - i - 1))
+    
+        //     switch op {
+        //     case .PLUS:
+        //         fmt.sbprintf(&buffer, "        add rax, rbx\n")
+        //         fmt.sbprintf(&buffer, "        mov [rsp+%v], rax\n", 8 * (nums_count - i - 1))
+        //         nums_count += 1
+        //     case .MINUS: 
+        //         fmt.sbprintf(&buffer, "        sub rbx, rax\n")
+        //         fmt.sbprintf(&buffer, "        mov [rsp+%v], rbx\n", 8 * (nums_count - i - 1))
+        //         nums_count += 1
+        //     case .MULTIPLY: 
+        //         fmt.sbprintf(&buffer, "        imul rbx\n")
+        //         fmt.sbprintf(&buffer, "        mov [rsp+%v], rax\n", 8 * (nums_count - i - 1))
+        //         nums_count += 1
+        //     case .DIVISON:
+        //         fmt.sbprintf(&buffer, "        idiv rbx\n")
+        //         fmt.sbprintf(&buffer, "        mov [rsp+%v], rax\n", 8 * (nums_count - i - 1))
+        //         nums_count += 1
+
+        //     case .EQ: fallthrough
+        //     case .LSQPAR: fallthrough
+        //     case .RSQPAR: fallthrough
+        //     case .LPAR: fallthrough
+        //     case .RPAR: fallthrough
+        //     case .DDOT: fallthrough
+        //     case .PRIME: fallthrough
+        //     case .NEWLINE:
+        //         fmt.panicf("Error <%v> in expresion", op)
+        //     case: 
+        //         unreachable()
+        //     }
             
-            fmt.sbprintf(&buffer, ".skipcommaspace%v:\n", i)
-            fmt.sbprintf(&buffer, "        inc qword [rsp]\n")
-            fmt.sbprintf(&buffer, "        mov rax, %v\n", t.end)
-            fmt.sbprintf(&buffer, "        cmp [rsp], rax\n")
-            fmt.sbprintf(&buffer, "        jbe .printlist%v\n", i)
+        // }
+        // case int:
+        // switch t in ast.variables[arg].expr {
+        // case Sum:
+        //     fmt.sbprintf(&buffer, "        mov rax, [rbp-%v]\n", (arg+1)*8)
+        //     fmt.sbprintf(&buffer, "        call print\n")
+        //     fmt.sbprintf(&buffer, "        ; Write syscall\n")
+        //     fmt.sbprintf(&buffer, "        mov rax, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rdi, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rsi, newline\n")
+        //     fmt.sbprintf(&buffer, "        mov rdx, 1\n")
+        //     fmt.sbprintf(&buffer, "        syscall\n")
+        // case int:
+        //     fmt.sbprintf(&buffer, "        mov rax, [rbp-%v]\n", (arg+1)*8)
+        //     fmt.sbprintf(&buffer, "        call print\n")
+        //     fmt.sbprintf(&buffer, "        ; Write syscall\n")
+        //     fmt.sbprintf(&buffer, "        mov rax, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rdi, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rsi, newline\n")
+        //     fmt.sbprintf(&buffer, "        mov rdx, 1\n")
+        //     fmt.sbprintf(&buffer, "        syscall\n")
+        // case List:
+        //     fmt.sbprintf(&buffer, "        ; Write syscall\n")
+        //     fmt.sbprintf(&buffer, "        mov rax, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rdi, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rsi, lsqpar\n")
+        //     fmt.sbprintf(&buffer, "        mov rdx, 1\n")
+        //     fmt.sbprintf(&buffer, "        syscall\n")
             
-            fmt.sbprintf(&buffer, "        ; Write syscall\n")
-            fmt.sbprintf(&buffer, "        mov rax, 1\n")
-            fmt.sbprintf(&buffer, "        mov rdi, 1\n")
-            fmt.sbprintf(&buffer, "        mov rsi, rsqpar\n")
-            fmt.sbprintf(&buffer, "        mov rdx, 1\n")
-            fmt.sbprintf(&buffer, "        syscall\n")
+        //     fmt.sbprintf(&buffer, "        push qword %v\n", t.start)
+        //     fmt.sbprintf(&buffer, ".printlist%v:\n", i)
+        //     fmt.sbprintf(&buffer, "        mov rax, [rsp]\n")
+        //     fmt.sbprintf(&buffer, "        call print\n")
             
-            fmt.sbprintf(&buffer, "        ; Write syscall\n")
-            fmt.sbprintf(&buffer, "        mov rax, 1\n")
-            fmt.sbprintf(&buffer, "        mov rdi, 1\n")
-            fmt.sbprintf(&buffer, "        mov rsi, newline\n")
-            fmt.sbprintf(&buffer, "        mov rdx, 1\n")
-            fmt.sbprintf(&buffer, "        syscall\n")
-            fmt.sbprintf(&buffer, "        add rsp, 8\n")
-        } 
+        //     fmt.sbprintf(&buffer, "        mov rax, %v\n", t.end)
+        //     fmt.sbprintf(&buffer, "        cmp [rsp], rax\n")
+        //     fmt.sbprintf(&buffer, "        je .skipcommaspace%v\n", i)
+        //     fmt.sbprintf(&buffer, "        ; Write syscall\n")
+        //     fmt.sbprintf(&buffer, "        mov rax, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rdi, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rsi, commaspace\n")
+        //     fmt.sbprintf(&buffer, "        mov rdx, 2\n")
+        //     fmt.sbprintf(&buffer, "        syscall\n")
+            
+        //     fmt.sbprintf(&buffer, ".skipcommaspace%v:\n", i)
+        //     fmt.sbprintf(&buffer, "        inc qword [rsp]\n")
+        //     fmt.sbprintf(&buffer, "        mov rax, %v\n", t.end)
+        //     fmt.sbprintf(&buffer, "        cmp [rsp], rax\n")
+        //     fmt.sbprintf(&buffer, "        jbe .printlist%v\n", i)
+            
+        //     fmt.sbprintf(&buffer, "        ; Write syscall\n")
+        //     fmt.sbprintf(&buffer, "        mov rax, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rdi, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rsi, rsqpar\n")
+        //     fmt.sbprintf(&buffer, "        mov rdx, 1\n")
+        //     fmt.sbprintf(&buffer, "        syscall\n")
+            
+        //     fmt.sbprintf(&buffer, "        ; Write syscall\n")
+        //     fmt.sbprintf(&buffer, "        mov rax, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rdi, 1\n")
+        //     fmt.sbprintf(&buffer, "        mov rsi, newline\n")
+        //     fmt.sbprintf(&buffer, "        mov rdx, 1\n")
+        //     fmt.sbprintf(&buffer, "        syscall\n")
+        //     fmt.sbprintf(&buffer, "        add rsp, 8\n")
+        // } 
     }
     
     fmt.sbprintf(&buffer, "        mov rax, 0x3c\n")

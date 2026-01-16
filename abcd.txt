@@ -1,7 +1,11 @@
 a = 32
 b = 12
 sum = a + b
+
 print(sum)
+
+d = 1
+print(d)
 
 c = 11
 ddd = 58
