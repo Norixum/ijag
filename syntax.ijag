@@ -229,3 +229,24 @@ remove(string: String, target: Char): String =
 _ = map ["Rust", "Scala"] (word) := '(remove word 'a')
 # [4, 3]
 
+# Concept of 'World' (https://clean.cs.ru.nl/download/html_report/CleanRep.2.2_4.htm#_Toc311797987)
+# or just something like 'unsafe' for interacting with OS
+
+# Inline assembly for syscalls
+# something like
+asm "xor rax, rax"
+
+# If we pass arguments through stack
+# function for syscall with 3 arguments is gonna
+# look something like this
+syscall3(number, rdi, rsi, rdx: Natural) :=
+	asm "mov rax, [rbp + 8 ]"
+	asm "mov rdi, [rbp + 16]"
+	asm "mov rsi, [rbp + 24]"
+	asm "mov rdx, [rbp + 32]"
+	asm "syscall"
+
+write(fd: Natural, buffer: String) :=
+	# write = 1, stdout = 0
+	syscall3 1 0 buffer.ptr buffer.len
+
