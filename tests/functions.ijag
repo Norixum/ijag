@@ -1,0 +1,10 @@
+a : Integer = 1
+#b := 2          # Not working for now
+print a
+
+add(a: Integer, b: Integer): Integer = + a b
+funny : Integer = add 34 35
+print funny
+
+vectlensq(x: Integer, y: Integer, z: Integer): Integer = + + * x x * y y * z z
+print vectlensq 1 2 3
