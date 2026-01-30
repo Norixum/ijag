@@ -250,3 +250,6 @@ write(fd: Natural, buffer: String) :=
 	# write = 1, stdout = 0
 	syscall3 1 0 buffer.ptr buffer.len
 
+# Concept of Generators, for lazy evaluation of collection
+# elements
+
