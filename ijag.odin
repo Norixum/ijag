@@ -640,6 +640,13 @@ generate_asm :: proc(ast: ^AST) {
     os.close(out)
 }
 
+nuke :: proc(ast: ^AST, content: []byte, tokens: [dynamic]Token) {
+    delete(ast.main)
+    delete(ast.functions)
+    delete(content)
+    delete(tokens)
+}
+
 run :: proc() -> (main_ok: bool) {
     if len(os.args) < 2 {
         fmt.printf("Usage: ijaq <file>")
@@ -660,6 +667,7 @@ run :: proc() -> (main_ok: bool) {
     ast.functions["print"] = def
     parse(tokens[:], &ast) or_return
     generate_asm(&ast)
+    nuke(&ast, input, tokens)
     return true
 }
 
