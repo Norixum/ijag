@@ -45,6 +45,7 @@ Token_Kind :: enum {
     EOF,
     COMMA,
     STR,
+    ARROW,
 }
 
 Token :: struct {
@@ -140,23 +141,45 @@ token_get_str :: proc(tokens: ^Tokens, token: Token) -> Token_Str {
 }
 
 AST :: struct {
-    functions  : map[Token_Id]Func_Def,
-    main       : [dynamic]Instruction,
-    bodies     : [dynamic]Instruction,
-    parameters : [dynamic]Func_Parameter,
-    strs       : [dynamic]string,
+    bindings         : map[Token_Id]Expr,
+    procedures       : [dynamic]Proc,
+    main             : [dynamic]Instruction,
+    bodies           : [dynamic]Instruction,
+    parameters       : [dynamic]Func_Parameter,
+    strs             : [dynamic]string,
+    builtin_types    : [dynamic]Token_Builtin_Type,
+    proc_types       : [dynamic]Proc_Type,
+    proc_param_types : [dynamic]Type,
 }
 
-Func_Decl :: struct {
-    id         : Token_Id,
-    parameters : []Func_Parameter,
-    line       : int,
-    column     : int,
+Expr :: struct {
+    type: Type,
+    handle: int,
+    mutable: bool,
 }
 
-Func_Def :: struct {
+Type :: struct {
+    kind: Type_Kind,
+    handle: int,
+}
+
+Type_Kind :: enum {
+    BUILTIN,
+    PROC,
+}
+
+Proc_Type :: struct {
+    param_types: Slice_Index,
+    return_type: Type,
+}
+
+// TODO: Add support for several return types
+Proc :: struct {
     body       : Slice_Index,
     parameters : Slice_Index,
+    retype     : Type,
+    line       : int,
+    column     : int,
 }
 
 Slice_Index :: struct {
@@ -166,7 +189,7 @@ Slice_Index :: struct {
 
 Func_Parameter :: struct {
     name: Token_Id,
-    type: Token_Builtin_Type,
+    type: Type,
 }
 
 Push_Num :: int
@@ -210,6 +233,15 @@ Lexer :: struct {
     line    : int,
     column  : int,
     error   : bool,
+}
+
+KEYWORDS :: []string { "if", "else", "return" }
+
+check_keywords :: proc(str: string) -> bool {
+    for word in KEYWORDS {
+        if strings.compare(str, word) == 0 do return true
+    }
+    return false
 }
 
 lexer_init :: proc(content: string) -> Lexer {
@@ -257,7 +289,15 @@ lexer_next :: proc(lexer: ^Lexer, tokens: ^Tokens) -> (ok: bool) {
         if strings.compare(id, "Integer") == 0 {
             token_with_payload(tokens, lexer.line, lexer.column, Token_Builtin_Type.INTEGER)
             return true
-        } 
+        }
+        if strings.compare(id, "String") == 0 {
+            token_with_payload(tokens, lexer.line, lexer.column, Token_Builtin_Type.STRING)
+            return true
+        }
+        if strings.compare(id, "Boolean") == 0 {
+            token_with_payload(tokens, lexer.line, lexer.column, Token_Builtin_Type.BOOLEAN)
+            return true
+        }
         token_with_payload(tokens, lexer.line, lexer.column, Token_Id(id))
         return true
     }
@@ -335,6 +375,12 @@ lexer_next :: proc(lexer: ^Lexer, tokens: ^Tokens) -> (ok: bool) {
         token_with_payload(tokens, lexer.line, lexer.column, Token_Op.ADD)
         return true
     case '-':
+        char, _ := lexer_peek_char(lexer)
+        if char == '>' {
+            lexer_next_char(lexer)
+            token_without_payload(tokens, lexer.line,lexer.column, .ARROW)
+            return true
+        }
         token_with_payload(tokens, lexer.line, lexer.column, Token_Op.SUB)
         return true
     case '*':
@@ -419,60 +465,129 @@ parser_recover :: proc(parser: ^Parser, pos: int) {
     parser.current = pos
 }
 
-parse_declaration :: proc(parser: ^Parser) -> (decl: Func_Decl, ok: bool){
-    @(static) params: [dynamic]Func_Parameter
-    clear(&params)
-
-    token_id := parser_expect(parser, .ID) or_return
-    id := token_get_id(parser.tokens, token_id)
-
-    decl.id = id
-    decl.line = token_id.line
-    decl.column = token_id.column
+parse_declaration :: proc(parser: ^Parser, ast: ^AST) -> (error : enum{NONE, NOT_DECL, ETC}){
+    expr : Expr
+    procedure : Proc
     
-    if strings.compare(string(id), "if") == 0 || strings.compare(string(id), "else") == 0 {
-        return
+    id: Token_Id
+    { 
+        token_id, ok := parser_expect(parser, .ID) 
+        if !ok do return .NOT_DECL
+        id = token_get_id(parser.tokens, token_id)
     }
+    
+    if check_keywords(cast(string)id) do return .NOT_DECL
+    if _, ok := parser_expect(parser, .COL); !ok do return .NOT_DECL
     
     next := parser_next(parser)
     #partial switch next.kind {
-    case .LPAR:
-        loop: for {
-            token_id := parser_expect(parser, .ID) or_return
-            id := token_get_id(parser.tokens, token_id)
-            
-            for param in params {
-                if strings.compare(string(id), string(param.name)) == 0 {
-                    return
-                }
+    case .COL:
+        expr.mutable = false
+    case .EQ:
+        expr.mutable = true
+    case:
+        fmt.printfln("P(%v:%v): Expected ':' or '=', but got: %v", next.line, next.column, next.kind)
+        return .ETC
+    }
+
+    if parser_next(parser).kind != .LPAR do return .NOT_DECL
+    
+    param_count := len(ast.parameters)
+    defer if error != .NONE {
+        for len(ast.parameters) != param_count {
+            pop(&ast.parameters)
+            // NOTE: not sure if it would work
+            pop(&ast.builtin_types)
+        }
+    }
+    
+    loop: for {
+        if parser_peek(parser).kind == .ARROW {
+            parser_next(parser)
+            break
+        }
+        token_id : Token
+        param_id : Token_Id
+        {
+            _token_id, ok := parser_expect(parser, .ID) 
+            if !ok {
+                fmt.printfln("P(%v:%v): Expected <id>, but got: %v", token_id.line, token_id.column, _token_id.kind)
+                return .ETC
             }
-
-            parser_expect(parser, .COL) or_return
-            token_type := parser_expect(parser, .TYPE) or_return
-            type := token_get_type(parser.tokens, token_type)
-            append(&params, Func_Parameter{id, type})
-
-            next := parser_next(parser) 
-            #partial switch next.kind {
-            case .RPAR:
-                break loop
-            case .COMMA:
-                continue loop
-            case:
-                return
+            param_id = token_get_id(parser.tokens, _token_id)
+            token_id = _token_id
+        }
+        if check_keywords(cast(string)param_id) {
+            fmt.printfln("P(%v:%v): Expected <id>, but got keyword: %v", token_id.line, token_id.column, param_id)
+            return .ETC
+        }
+        
+        for param in ast.parameters[param_count:] {
+            if strings.compare(string(param_id), string(param.name)) == 0 {
+                fmt.printfln("P(%v:%v): Parameter already exists: %v", token_id.line, token_id.column, param_id)
+                return .ETC
             }
         }
-        parser_expect(parser, .COL) or_return
-        fallthrough
-    case .COL:
-        token_type := parser_expect(parser, .TYPE) or_return
-        type := token_get_type(parser.tokens, token_type)
-        assert(type == .INTEGER)
-    case:
-        return
+        
+        if parser_next(parser).kind != .COL {
+            fmt.printfln("P(%v:%v): Expected ':', but got: %v", token_id.line, token_id.column, param_id)
+            return .ETC
+        }
+        token_type: Token
+        type: Token_Builtin_Type
+        {
+            _token_type, ok := parser_expect(parser, .TYPE)
+            if !ok {
+                fmt.printfln("P(%v:%v): Expected <type>, but got: %v", token_type.line, token_type.column, token_type.kind)
+                return .ETC
+            }
+            type = token_get_type(parser.tokens, _token_type)
+            token_type = _token_type
+        }
+        // TODO: Add support for not Builtin types here
+        handle := len(ast.builtin_types)
+        append(&ast.builtin_types, type)
+        append(&ast.parameters, Func_Parameter{param_id, Type{.BUILTIN, handle}})
+
+        next := parser_next(parser) 
+        #partial switch next.kind {
+        case .ARROW:
+            break loop
+        case .COMMA:
+            continue loop
+        case:
+            fmt.printfln("P(%v:%v): Expected '->' or ',', but got: %v", next.line, next.column, next.kind)
+            return .ETC
+        }
     }
-    decl.parameters = params[:]
-    return decl, true
+    procedure.parameters = Slice_Index{param_count, len(ast.parameters)}
+    
+    if parser_peek(parser).kind == .TYPE {
+        _token_type := parser_next(parser)
+        type := token_get_type(parser.tokens, _token_type)
+        handle := len(ast.builtin_types)
+        
+        append(&ast.builtin_types, type)
+        procedure.retype = Type{.BUILTIN, handle}
+    }
+
+    if parser_next(parser).kind != .RPAR {
+        fmt.printfln("P(%v:%v): Expected ')', but got: %v", next.line, next.column, next.kind)
+        return .ETC
+    }
+    expr.handle = len(ast.procedures)
+    append(&ast.procedures, procedure)
+    handle := len(ast.proc_types)
+    begin := len(ast.proc_param_types)
+    for i in procedure.parameters.begin..<procedure.parameters.end {
+        append(&ast.proc_param_types, ast.parameters[i].type)
+    }  
+    end := len(ast.proc_param_types)
+    proc_type := Proc_Type{{begin, end}, procedure.retype}
+    append(&ast.proc_types, proc_type)
+    expr.type = Type{.PROC, handle}
+    ast.bindings[id] = expr 
+    return .NONE
 }
 
 parse_declarations :: proc(st: ^State) -> (ok: bool) {
@@ -482,14 +597,12 @@ parse_declarations :: proc(st: ^State) -> (ok: bool) {
             parser_next(&parser)
             continue
         }
-        decl := parse_declaration(&parser) or_continue
-        if decl.id in st.ast.functions {
-            fmt.printf("(%v:%v): Function is already declared: %#v", decl.line, decl.column, decl.id)
-            return 
+        // TODO: think hard about this
+        switch parse_declaration(&parser, &st.ast) {
+        case .NONE:
+        case .NOT_DECL: continue
+        case .ETC: return 
         }
-        param_begin := len(st.ast.parameters)
-        append(&st.ast.parameters, ..decl.parameters)
-        st.ast.functions[decl.id] = Func_Def{parameters = {param_begin, len(st.ast.parameters)}}
     }
     return true
 }
@@ -529,14 +642,15 @@ parse_expr :: proc(parser: ^Parser, expr: ^[dynamic]Instruction, ast: ^AST, para
                 return true
             }
         }
-        if id not_in ast.functions {
-            fmt.printf("(%v:%v): Function does not exists: %#v", next.line, next.column, id)
+        if id not_in ast.bindings {
+            fmt.printfln("P(%v:%v): Used not bounded id: %#v", next.line, next.column, id)
             return
         }
+        assert(ast.bindings[id].type.kind == .PROC)
 
         func_call: Func_Call
         func_call.name = id
-        call_params := ast.functions[id].parameters
+        call_params := ast.procedures[ast.bindings[id].handle].parameters
         for i in 0..<call_params.end - call_params.begin {
             parse_expr(parser, expr, ast, params) or_return
         }
@@ -600,13 +714,20 @@ parse :: proc(st: ^State) -> (ok: bool) {
             continue
         }
         save := parser_save(parser)
-        if decl, ok := parse_declaration(&parser); ok {
-            body_begin := len(st.ast.bodies)
-            def := &st.ast.functions[decl.id]
-            params := st.ast.parameters[def.parameters.begin:def.parameters.end]
-            parse_expr(&parser, &st.ast.bodies, &st.ast, params) or_return
-            def.body = {body_begin, len(st.ast.bodies)} 
-            continue
+        next = parser_peek(&parser)
+        if next.kind == .ID {
+            id := token_get_id(&st.tokens, next)
+            switch parse_declaration(&parser, &st.ast) {
+            case .NONE:
+                body_begin := len(st.ast.bodies)
+                procedure := &st.ast.procedures[st.ast.bindings[id].handle]
+                parse_expr(&parser, &st.ast.bodies, &st.ast, get_parameters(&st.ast, id)) or_return
+                procedure.body = {body_begin, len(st.ast.bodies)} 
+                continue
+            case .NOT_DECL:
+            case .ETC:
+                unreachable()
+            }
         }
         parser_recover(&parser, save)
         if parse_expr(&parser, &st.ast.main, &st.ast, {}) do continue
@@ -616,32 +737,80 @@ parse :: proc(st: ^State) -> (ok: bool) {
     return true
 }
 
+create_type :: proc(ast: ^AST, type: $T) -> Type {
+    type := type
+    switch typeid_of(T) {
+    case Token_Builtin_Type:
+        handle := len(ast.builtin_types)
+        t := (cast(^Token_Builtin_Type)cast(^any)&type)^
+        append(&ast.builtin_types, t)
+        return {.BUILTIN, handle}
+    case Proc_Type:
+        handle := len(ast.proc_types)
+        t := (cast(^Proc_Type)cast(^any)&type)^
+        append(&ast.proc_types, t)
+        return {.PROC, handle}
+    case:
+        fmt.panicf("Unknown type: %v", typeid_of(T))
+    }
+}
+type_stack_pop :: proc(ast: ^AST, type_stack: ^[dynamic]Type) -> Token_Builtin_Type {
+    res := pop(type_stack)
+    assert(res.kind == .BUILTIN)
+    type := ast.builtin_types[res.handle]
+    ordered_remove(&ast.builtin_types, res.handle)
+    return type
+}
+
+get_parameters :: proc(ast: ^AST, id: Token_Id) -> []Func_Parameter {
+    assert(ast.bindings[id].type.kind == .PROC)
+    procedure := ast.procedures[ast.bindings[id].handle]
+    proc_param := procedure.parameters
+    return ast.parameters[proc_param.begin:proc_param.end]
+}
+
+check_types :: proc(ast: ^AST, a, b: Type) -> bool {
+    if a.kind != b.kind do return false
+    switch a.kind {
+        case .BUILTIN:
+            return ast.builtin_types[a.handle] == ast.builtin_types[b.handle]
+        case .PROC:
+            unimplemented()
+    }
+    unreachable()
+}
+
+clone_type :: proc(ast: ^AST, type: Type) -> Type {
+    assert(type.kind == .BUILTIN)
+    return create_type(ast, ast.builtin_types[type.handle])    
+}
+
 type_check :: proc(
     instructions: []Instruction,
     params: []Func_Parameter,
     ast: ^AST,
-    type_stack: ^[dynamic]Token_Builtin_Type
-) -> Token_Builtin_Type {
+    type_stack: ^[dynamic]Type
+) -> Type {
     loop: for i := 0; i < len(instructions); i += 1 {
         sw: switch v in instructions[i] {
         case Push_Num:
-            append(type_stack, Token_Builtin_Type.INTEGER)
+            append(type_stack, create_type(ast, Token_Builtin_Type.INTEGER))
         case Push_Op:
-            assert(pop(type_stack) == .INTEGER)
-            assert(pop(type_stack) == .INTEGER)
+            assert(type_stack_pop(ast, type_stack) == .INTEGER)
+            assert(type_stack_pop(ast, type_stack) == .INTEGER)
             switch v {
             case .ADD:
-                append(type_stack, Token_Builtin_Type.INTEGER)
+                append(type_stack, create_type(ast, Token_Builtin_Type.INTEGER))
             case .SUB: 
-                append(type_stack, Token_Builtin_Type.INTEGER)
+                append(type_stack, create_type(ast, Token_Builtin_Type.INTEGER))
             case .MUL: 
-                append(type_stack, Token_Builtin_Type.INTEGER)
+                append(type_stack, create_type(ast, Token_Builtin_Type.INTEGER))
             case .DIV:
-                append(type_stack, Token_Builtin_Type.INTEGER)
+                append(type_stack, create_type(ast, Token_Builtin_Type.INTEGER))
             case .EQL:
-                append(type_stack, Token_Builtin_Type.BOOLEAN)
+                append(type_stack, create_type(ast, Token_Builtin_Type.BOOLEAN))
             case .NEQ:
-                append(type_stack, Token_Builtin_Type.BOOLEAN)
+                append(type_stack, create_type(ast, Token_Builtin_Type.BOOLEAN))
             case .PRIME: 
                 unimplemented()
             case: 
@@ -650,19 +819,22 @@ type_check :: proc(
         case Push_Arg:
             for param, i in params {
                 if strings.compare(string(param.name), string(v)) == 0 {
-                    append(type_stack, param.type)
+                    append(type_stack, clone_type(ast, param.type))
                     break sw
                 }
             }
             unreachable()
         case Func_Call:
-            params := ast.functions[v.name].parameters
-            params_count := params.end - params.begin
-            #reverse for param in ast.parameters[params.begin:params.end] {
-                assert(pop(type_stack) == param.type)
+            params := get_parameters(ast, v.name)
+            #reverse for param in params {
+                assert(param.type.kind == .BUILTIN)
+                assert(type_stack_pop(ast, type_stack) == ast.builtin_types[param.type.handle])
             }
             if strings.compare(string(v.name), "print") != 0 && strings.compare(string(v.name), "printstr") != 0 {
-                append(type_stack, Token_Builtin_Type.INTEGER)
+                handle := ast.procedures[ast.bindings[v.name].handle].retype.handle
+                if ast.builtin_types[handle] != .VOID {
+                    append(type_stack, clone_type(ast, ast.procedures[ast.bindings[v.name].handle].retype))
+                }
             }
         case Jump:
             for v1, j in instructions[i+1:] {
@@ -674,11 +846,13 @@ type_check :: proc(
                 }
             }
         case Con_Jump:
-            assert(pop(type_stack) == .BOOLEAN)
-            else_branch: Token_Builtin_Type
-            type_stack_saved: [dynamic]Token_Builtin_Type
+            assert(type_stack_pop(ast, type_stack) == .BOOLEAN)
+            else_branch: Type
+            type_stack_saved: [dynamic]Type
             defer delete(type_stack_saved)
-            append(&type_stack_saved, ..type_stack[:])
+            for type in type_stack {
+                append(&type_stack_saved, clone_type(ast, type))
+            }
             
             for v1, j in instructions[i+1:] {
                 if label, ok := v1.(Label); ok {
@@ -690,25 +864,27 @@ type_check :: proc(
             }
             
             clear(&type_stack_saved)
-            append(&type_stack_saved, ..type_stack[:])
+            for type in type_stack {
+                append(&type_stack_saved, clone_type(ast, type))
+            }
             if_branch := type_check(instructions[i+1:], params, ast, &type_stack_saved)
-            assert(if_branch == else_branch)
+            assert(check_types(ast, if_branch, else_branch))
             clear(type_stack)
-            if if_branch == .VOID do continue
+            if ast.builtin_types[if_branch.handle] == .VOID do continue
             append(type_stack, if_branch)
             break loop
         case Label:
         case Push_Str:
-            append(type_stack, Token_Builtin_Type.STRING)
+            append(type_stack, create_type(ast, Token_Builtin_Type.STRING))
         }
     }
-    assert(len(type_stack) <= 1)
-    if len(type_stack) == 0 do return .VOID
+    // assert(len(type_stack) <= 1)
+    if len(type_stack) == 0 do return create_type(ast, Token_Builtin_Type.VOID)
     return type_stack[0]
 }
 
 generate_expr_asm :: proc(buffer: ^strings.Builder, expr: []Instruction, params: []Func_Parameter, ast: ^AST) {
-    @(static) type_stack: [dynamic]Token_Builtin_Type
+    @(static) type_stack: [dynamic]Type
     clear(&type_stack)
 
     type_check(expr, params, ast, &type_stack)
@@ -758,11 +934,12 @@ generate_expr_asm :: proc(buffer: ^strings.Builder, expr: []Instruction, params:
             }
             unreachable()
         case Func_Call:
-            params := ast.functions[inst.name].parameters
-            params_count := params.end - params.begin 
+            params := get_parameters(ast, inst.name)
             byte_pop := 0
-            #reverse for param in ast.parameters[params.begin:params.end] {
-                switch param.type {
+            #reverse for param in params {
+                assert(param.type.kind == .BUILTIN)
+                type := ast.builtin_types[param.type.handle]
+                switch type {
                 case .INTEGER:
                     byte_pop += 8
                 case .STRING:
@@ -880,15 +1057,20 @@ generate_asm :: proc(ast: ^AST) {
     fmt.sbprintf(&buffer, "        pop rbp\n")
     fmt.sbprintf(&buffer, "        ret\n")
 
-    for name, def in ast.functions {
+    for name, expr in ast.bindings {
+        if expr.type.kind != .PROC do continue
         if strings.compare(string(name), "print") == 0 do continue
         if strings.compare(string(name), "printstr") == 0 do continue
+        
         fmt.sbprintf(&buffer, "%v:\n", name)
         fmt.sbprintf(&buffer, "        push rbp\n")
         fmt.sbprintf(&buffer, "        mov rbp, rsp\n")
-        body := ast.bodies[def.body.begin:def.body.end]
-        parameters := ast.parameters[def.parameters.begin:def.parameters.end]
+
+        procedure := ast.procedures[expr.handle]
+        body := ast.bodies[procedure.body.begin:procedure.body.end]
+        parameters := get_parameters(ast, name)
         generate_expr_asm(&buffer, body, parameters, ast)
+        
         fmt.sbprintf(&buffer, "        pop rax\n")
         fmt.sbprintf(&buffer, "        mov rsp, rbp\n")
         fmt.sbprintf(&buffer, "        pop rbp\n")
@@ -917,7 +1099,7 @@ state_nuke :: proc(st: ^State) {
     delete(st.tokens.types)
 
     delete(st.ast.main)
-    delete(st.ast.functions)
+    delete(st.ast.procedures)
     delete(st.ast.bodies)
     delete(st.ast.parameters)
     delete(st.ast.strs)
@@ -952,14 +1134,43 @@ run :: proc() -> (ok: bool) {
     lex(&st) or_return
     
     // TODO: Do something about builtin functions
-    def: Func_Def
-    append(&st.ast.parameters, Func_Parameter{type = .INTEGER})
-    def.parameters.end = 1
-    st.ast.functions["print"] = def
-    append(&st.ast.parameters, Func_Parameter{type = .STRING})
-    def.parameters.begin = 1
-    def.parameters.end = 2
-    st.ast.functions["printstr"] = def
+    {
+        procedure: Proc
+        append(&st.ast.parameters, Func_Parameter{type = create_type(&st.ast, Token_Builtin_Type.INTEGER)})
+        procedure.parameters.end = 1
+        procedure.retype = create_type(&st.ast, Token_Builtin_Type.VOID)
+    
+        bind : Expr
+        bind.handle = len(st.ast.procedures)
+        append(&st.ast.procedures, procedure)
+    
+        proc_type : Proc_Type
+        handle := len(st.ast.proc_param_types)
+        append(&st.ast.proc_param_types, create_type(&st.ast, Token_Builtin_Type.INTEGER))
+        proc_type.param_types = {handle, handle + 1}
+        proc_type.return_type = create_type(&st.ast, Token_Builtin_Type.VOID)
+        bind.type = create_type(&st.ast, proc_type)
+        st.ast.bindings["print"] = bind
+    }
+    {
+        procedure: Proc
+        append(&st.ast.parameters, Func_Parameter{type = create_type(&st.ast, Token_Builtin_Type.STRING)})
+        procedure.parameters.begin = 1
+        procedure.parameters.end = 2
+        procedure.retype = create_type(&st.ast, Token_Builtin_Type.VOID)
+    
+        bind : Expr
+        bind.handle = len(st.ast.procedures)
+        append(&st.ast.procedures, procedure)
+    
+        proc_type : Proc_Type
+        handle := len(st.ast.proc_param_types)
+        append(&st.ast.proc_param_types, create_type(&st.ast, Token_Builtin_Type.STRING))
+        proc_type.param_types = {handle, handle + 1}
+        proc_type.return_type = create_type(&st.ast, Token_Builtin_Type.VOID)
+        bind.type = create_type(&st.ast, proc_type)
+        st.ast.bindings["printstr"] = bind
+    }
     
     parse(&st) or_return
     generate_asm(&st.ast)

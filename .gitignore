@@ -4,3 +4,4 @@ ijag
 output
 output.nasm
 output.o
+IJAG LANGUAGE.rdi
