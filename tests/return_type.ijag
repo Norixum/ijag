@@ -14,6 +14,6 @@ check :: (-> Boolean)  {
 }
 
 printbool check
-#printbool check
+printbool check
 printbool { == 1 2 }
-#printbool { != 1 2 }
+printbool { != 1 2 }
