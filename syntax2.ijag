@@ -11,44 +11,32 @@ _ :: Void
 mutable_value := 5
 immutable_value :: 6
 
-Add_Type : Type : (Int, Int -> Int)
-# Type of procedure with zero parameters and zero returned values: (Void -> Void)
-
 print_hello :: (->) {
-	@print "Hello, World!\n"
+	@print("Hello, World!\n")
 }
 
-add : Add_Type : (a: Int, b: Int -> Int) {
-	+ a b
+add :: (a: Int, b: Int -> Int) {
+	a + b
 }
 
-Vec2_Type : Type : (Real, Real)
-# Type of structure with zero fields: ()
-
-Vec2 : Vec2_Type : (
+# Struct
+Vec2 :: (
 	x: Real,
 	y: Real,
 )
 
 vec2len :: (v: Vec2 -> Real) {
-	@sqrt @add @mul v.x v.x @mul v.y v.y
+	@sqrt(v.x * v.x + v.y * v.y)
 }
 
-assert @eql @typeOf @mul 2 3 Int
-assert @eql @typeOf (@mul 2) (Int) -> Int
-
-IpAddrKind_Type : Type : (Nat8, 2)
-# Type of enum with zero members: (Nat8: 0)
-IpAddrKind : IpAddrKind_Type : (
-	@type Nat8
+# Enum
+IpAddrKind :: (
 	V4,
 	V6,
 )
 
-Token_Type : Type : (Int; String)
-# (;)
-Token : Token_Type : (
-	@type Void
+# Union
+Token :: (
 	Int;
 	String;
 )
@@ -59,9 +47,9 @@ a := 3
 b := 5
 
 if a > b {
-	@print "True"
+	@print("True")
 } else {
-	@print "False"
+	@print("False")
 }
 
 max := if a > b {a} else {b}
@@ -83,10 +71,3 @@ for {}
 for a < 5 {}
 for i := 0; i < 10; i += 1 { }
 for c in "Hello" {}
-
-xs := [1, 2, 3, 4, 5]
-result := for x in xs {
-	if @equ x 3 {
-		break x
-	}
-}
