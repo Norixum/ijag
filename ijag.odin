@@ -15,7 +15,6 @@ Token_Op :: enum {
     SUB,
     MUL,
     DIV,
-    PRIME,
     EQL,
     NEQ,
 }
@@ -28,10 +27,14 @@ Token_Builtin_Type :: enum {
 }
 
 Token_Kind :: enum {
+// Fields with payload
     ID,
+    STR,
     NUM,
-    TYPE,
     OP,
+    TYPE,
+
+// Fields without payload
     DDOT,
     LPAR,
     RPAR,
@@ -44,7 +47,6 @@ Token_Kind :: enum {
     EOL,
     EOF,
     COMMA,
-    STR,
     ARROW,
 }
 
@@ -141,7 +143,7 @@ token_get_str :: proc(tokens: ^Tokens, token: Token) -> Token_Str {
 }
 
 AST :: struct {
-    bindings         : map[Token_Id]Expr,
+    bindings         : map[Token_Id]Bind,
     procedures       : [dynamic]Proc,
     main             : [dynamic]Instruction,
     bodies           : [dynamic]Instruction,
@@ -152,12 +154,18 @@ AST :: struct {
     proc_param_types : [dynamic]Type,
 }
 
-Expr :: struct {
+// We bind expression of some type to the name
+// type   - type of the binded expression
+// handle - index in corresponding array (e.g. procedures)
+Bind :: struct {
     type: Type,
     handle: int,
     mutable: bool,
 }
 
+// Type of the expression
+// kind   - kind of the type (e.g. proc, buitlin)
+// handle - index in corresponding array (e.g. proc_types, builtin_types)
 Type :: struct {
     kind: Type_Kind,
     handle: int,
@@ -182,6 +190,29 @@ Proc :: struct {
     column     : int,
 }
 
+// TODO: We need to do something about it.
+// Maybe attach pointer to dynamic array to slice,
+// that way we would know from what array this slice was
+// created. Also create functions for constructing indexed
+// slice and retrieving regular slice from indexed.
+//
+// Or maybe we can create some kind of data-structure in
+// which we would pre-allocate blocks of fixed size and
+// then populate them as we go. That way we can just use
+// regular slices but it will require more complex logic
+// for management.
+//
+// We would need to keep track of all allocated blocks and how
+// much memory in them are used. If when we append elements of
+// one slice, the amount of free space in one block is not enough,
+// we would need to find block with enough free space or allocate
+// new one if none of them doesn't contain enough free space.
+// After which move all elements of current slice there.
+//
+// It somewhat complicated but with this approach we don't need
+// to worry about slices, and in theory this more optimal because
+// we don't constantly reallocate space for growing dynamic array
+// and dont' moving all content there.
 Slice_Index :: struct {
     begin : int,
     end   : int,
@@ -279,6 +310,8 @@ lexer_next :: proc(lexer: ^Lexer, tokens: ^Tokens) -> (ok: bool) {
     }
 
     char := lexer_next_char(lexer) or_return
+    // TODO: Add support for underscores and digits in names
+    // TODO: Tokenize keywords separately
     if unicode.is_letter(char) {
         id_begin := lexer.current
         for char in lexer_peek_char(lexer) {
@@ -389,9 +422,6 @@ lexer_next :: proc(lexer: ^Lexer, tokens: ^Tokens) -> (ok: bool) {
     case '/':
         token_with_payload(tokens, lexer.line, lexer.column, Token_Op.DIV)
         return true
-    case '\'':
-        token_with_payload(tokens, lexer.line, lexer.column, Token_Op.PRIME)
-        return true
     case ',':
         token_without_payload(tokens, lexer.line, lexer.column, .COMMA)
         return true
@@ -466,7 +496,7 @@ parser_recover :: proc(parser: ^Parser, pos: int) {
 }
 
 parse_declaration :: proc(parser: ^Parser, ast: ^AST) -> (error : enum{NONE, NOT_DECL, ETC}){
-    expr : Expr
+    expr : Bind
     procedure : Proc
     
     id: Token_Id
@@ -670,9 +700,6 @@ parse_expr :: proc(parser: ^Parser, expr: ^[dynamic]Instruction, ast: ^AST, para
             parse_expr(parser, expr, ast, params) or_return
             parse_expr(parser, expr, ast, params) or_return
             append(expr, op)
-        case .PRIME:
-            parse_expr(parser, expr, ast, params) or_return
-            append(expr, op)
         }
     case .STR:
         str := token_get_str(parser.tokens, next)
@@ -754,6 +781,7 @@ create_type :: proc(ast: ^AST, type: $T) -> Type {
         fmt.panicf("Unknown type: %v", typeid_of(T))
     }
 }
+
 type_stack_pop :: proc(ast: ^AST, type_stack: ^[dynamic]Type) -> Token_Builtin_Type {
     res := pop(type_stack)
     assert(res.kind == .BUILTIN)
@@ -769,7 +797,7 @@ get_parameters :: proc(ast: ^AST, id: Token_Id) -> []Func_Parameter {
     return ast.parameters[proc_param.begin:proc_param.end]
 }
 
-check_types :: proc(ast: ^AST, a, b: Type) -> bool {
+compare_types :: proc(ast: ^AST, a, b: Type) -> bool {
     if a.kind != b.kind do return false
     switch a.kind {
         case .BUILTIN:
@@ -811,8 +839,6 @@ type_check :: proc(
                 append(type_stack, create_type(ast, Token_Builtin_Type.BOOLEAN))
             case .NEQ:
                 append(type_stack, create_type(ast, Token_Builtin_Type.BOOLEAN))
-            case .PRIME: 
-                unimplemented()
             case: 
                 unreachable()
             }
@@ -830,11 +856,9 @@ type_check :: proc(
                 assert(param.type.kind == .BUILTIN)
                 assert(type_stack_pop(ast, type_stack) == ast.builtin_types[param.type.handle])
             }
-            if strings.compare(string(v.name), "print") != 0 && strings.compare(string(v.name), "printstr") != 0 {
-                handle := ast.procedures[ast.bindings[v.name].handle].retype.handle
-                if ast.builtin_types[handle] != .VOID {
-                    append(type_stack, clone_type(ast, ast.procedures[ast.bindings[v.name].handle].retype))
-                }
+            handle := ast.procedures[ast.bindings[v.name].handle].retype.handle
+            if ast.builtin_types[handle] != .VOID {
+                append(type_stack, clone_type(ast, ast.procedures[ast.bindings[v.name].handle].retype))
             }
         case Jump:
             for v1, j in instructions[i+1:] {
@@ -868,7 +892,7 @@ type_check :: proc(
                 append(&type_stack_saved, clone_type(ast, type))
             }
             if_branch := type_check(instructions[i+1:], params, ast, &type_stack_saved)
-            assert(check_types(ast, if_branch, else_branch))
+            assert(compare_types(ast, if_branch, else_branch))
             clear(type_stack)
             if ast.builtin_types[if_branch.handle] == .VOID do continue
             append(type_stack, if_branch)
@@ -878,7 +902,7 @@ type_check :: proc(
             append(type_stack, create_type(ast, Token_Builtin_Type.STRING))
         }
     }
-    // assert(len(type_stack) <= 1)
+    // TODO: assert(len(type_stack) <= 1)
     if len(type_stack) == 0 do return create_type(ast, Token_Builtin_Type.VOID)
     return type_stack[0]
 }
@@ -920,8 +944,6 @@ generate_expr_asm :: proc(buffer: ^strings.Builder, expr: []Instruction, params:
                 fmt.sbprintf(buffer, "        cmp rax, rbx\n")
                 fmt.sbprintf(buffer, "        cmove rdx, rcx\n")
                 fmt.sbprintf(buffer, "        push rdx\n")
-            case .PRIME: 
-                unimplemented()
             case: 
                 unreachable()
             }
@@ -964,8 +986,15 @@ generate_expr_asm :: proc(buffer: ^strings.Builder, expr: []Instruction, params:
             else {
                 fmt.sbprintf(buffer, "        call %v\n", inst.name)
                 fmt.sbprintf(buffer, "        add rsp, %v\n", byte_pop)
-                if strings.compare(string(inst.name), "printstr") != 0 {
-                    // TODO: make return types, now its only numbers
+
+                // TODO: make return types, now its only numbers
+                bind := &ast.bindings[inst.name]
+                assert(bind.type.kind == .PROC)
+                return_type := ast.procedures[bind.handle].retype
+                assert(return_type.kind == .BUILTIN)
+                assert(ast.builtin_types[return_type.handle] != .STRING)
+
+                if ast.builtin_types[return_type.handle] != .VOID {
                     fmt.sbprintf(buffer, "        push rax\n")
                 }
             }
@@ -1098,11 +1127,15 @@ state_nuke :: proc(st: ^State) {
     delete(st.tokens.strs)
     delete(st.tokens.types)
 
-    delete(st.ast.main)
+    delete(st.ast.bindings)
     delete(st.ast.procedures)
+    delete(st.ast.main)
     delete(st.ast.bodies)
     delete(st.ast.parameters)
     delete(st.ast.strs)
+    delete(st.ast.builtin_types)
+    delete(st.ast.proc_types)
+    delete(st.ast.proc_param_types)
 }
 
 State :: struct {
@@ -1134,13 +1167,14 @@ run :: proc() -> (ok: bool) {
     lex(&st) or_return
     
     // TODO: Do something about builtin functions
+    // Probably don't handle them like regular functions.
     {
         procedure: Proc
         append(&st.ast.parameters, Func_Parameter{type = create_type(&st.ast, Token_Builtin_Type.INTEGER)})
         procedure.parameters.end = 1
         procedure.retype = create_type(&st.ast, Token_Builtin_Type.VOID)
     
-        bind : Expr
+        bind : Bind
         bind.handle = len(st.ast.procedures)
         append(&st.ast.procedures, procedure)
     
@@ -1159,7 +1193,7 @@ run :: proc() -> (ok: bool) {
         procedure.parameters.end = 2
         procedure.retype = create_type(&st.ast, Token_Builtin_Type.VOID)
     
-        bind : Expr
+        bind : Bind
         bind.handle = len(st.ast.procedures)
         append(&st.ast.procedures, procedure)
     
